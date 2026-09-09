@@ -1,0 +1,30 @@
+﻿__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE & Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environments & Cache
+.env
+.venv
+env/
+venv/
+.cache/
+.pytest_cache/
+
+# Model weights & Checkpoints
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.onnx
+checkpoints/
+
+# Distribution & Build
+build/
+dist/
+*.egg-info/
