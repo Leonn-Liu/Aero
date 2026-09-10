@@ -1,4 +1,4 @@
-﻿from typing import Optional, Tuple
+﻿from typing import Optional, Tuple, List
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -20,47 +20,51 @@ class DraftModel:
         self.model.eval()
 
     @torch.inference_mode()
-    def generate_candidates(
-        self,
-        input_ids: torch.Tensor,
-        gamma: int = 4,
-        past_key_values: Optional[object] = None,
-        temperature: float = 1.0
-    ) -> Tuple[torch.Tensor, torch.Tensor, object]:
+    def prefill(self, input_ids: torch.Tensor) -> Tuple[torch.Tensor, object]:
         if input_ids.dim() == 1:
             input_ids = input_ids.unsqueeze(0)
         input_ids = input_ids.to(self.device)
+        outputs = self.model(input_ids=input_ids, use_cache=True)
+        return outputs.logits[:, -1, :], outputs.past_key_values
 
-        candidate_token_list = []
-        candidate_prob_list = []
-        curr_input_ids = input_ids
-        curr_past_key_values = past_key_values
+    @torch.inference_mode()
+    def step(self, token_id: int, past_key_values: object) -> Tuple[torch.Tensor, object]:
+        inp = torch.tensor([[token_id]], device=self.device)
+        outputs = self.model(input_ids=inp, past_key_values=past_key_values, use_cache=True)
+        return outputs.logits[:, -1, :], outputs.past_key_values
+
+    @torch.inference_mode()
+    def generate_candidates(
+        self,
+        start_logits: torch.Tensor,
+        past_key_values: object,
+        gamma: int = 4,
+        temperature: float = 1.0
+    ) -> Tuple[torch.Tensor, List[torch.Tensor], object]:
+        candidate_tokens_list = []
+        candidate_probs_list = []
+        curr_logits = start_logits
+        curr_pkv = past_key_values
 
         for _ in range(gamma):
-            if curr_past_key_values is None:
-                outputs = self.model(input_ids=curr_input_ids, use_cache=True)
-            else:
-                outputs = self.model(
-                    input_ids=curr_input_ids,
-                    past_key_values=curr_past_key_values,
-                    use_cache=True
-                )
-            curr_past_key_values = outputs.past_key_values
-            logits = outputs.logits[:, -1, :]
-
             if temperature == 0.0:
-                probs = torch.softmax(logits, dim=-1)
-                next_token = torch.argmax(logits, dim=-1, keepdim=True)
+                probs = torch.softmax(curr_logits, dim=-1)
+                next_token = torch.argmax(curr_logits, dim=-1, keepdim=True)
             else:
-                scaled_logits = logits / temperature
+                scaled_logits = curr_logits / temperature
                 probs = torch.softmax(scaled_logits, dim=-1)
                 next_token = torch.multinomial(probs, num_samples=1)
 
-            candidate_token_list.append(next_token)
-            candidate_prob_list.append(probs)
-            curr_input_ids = next_token
+            candidate_tokens_list.append(next_token)
+            candidate_probs_list.append(probs)
 
-        candidate_tokens = torch.cat(candidate_token_list, dim=1)
-        candidate_probs = torch.stack(candidate_prob_list, dim=1)
+            outputs = self.model(
+                input_ids=next_token,
+                past_key_values=curr_pkv,
+                use_cache=True
+            )
+            curr_pkv = outputs.past_key_values
+            curr_logits = outputs.logits[:, -1, :]
 
-        return candidate_tokens, candidate_probs, curr_past_key_values
+        candidate_tokens = torch.cat(candidate_tokens_list, dim=1)
+        return candidate_tokens, candidate_probs_list, curr_pkv

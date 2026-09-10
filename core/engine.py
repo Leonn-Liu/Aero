@@ -1,4 +1,4 @@
-﻿from typing import List
+﻿from typing import List, Tuple
 import torch
 from core.draft import DraftModel
 from core.verify import TargetVerifier
@@ -20,45 +20,98 @@ class SpeculativeEngine:
         gamma: int = 4,
         temperature: float = 1.0
     ) -> str:
+        text, _, _, _, _ = self.generate_with_stats(
+            prompt=prompt,
+            max_new_tokens=max_new_tokens,
+            gamma=gamma,
+            temperature=temperature
+        )
+        return text
+
+    def generate_pure_target(
+        self,
+        prompt: str,
+        max_new_tokens: int = 30,
+        temperature: float = 1.0
+    ) -> Tuple[str, List[int]]:
         input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids
         curr_input_ids = input_ids.to(self.target_verifier.device)
 
-        target_prob, target_pkv = self.target_verifier.prefill(curr_input_ids)
-        draft_out = self.draft_model.model(
-            input_ids=curr_input_ids.to(self.draft_model.device),
-            use_cache=True
-        )
-        draft_pkv = draft_out.past_key_values
+        logits, pkv = self.target_verifier.prefill(curr_input_ids)
+        generated_tokens: List[int] = []
+        curr_logits = logits
 
-        generated_ids: List[int] = curr_input_ids[0].tolist()
-        num_emitted = 0
+        for _ in range(max_new_tokens):
+            if temperature == 0.0:
+                next_token_id = torch.argmax(curr_logits, dim=-1).item()
+            else:
+                probs = torch.softmax(curr_logits / temperature, dim=-1)
+                next_token_id = torch.multinomial(probs, num_samples=1).item()
 
-        while num_emitted < max_new_tokens:
-            last_token = torch.tensor([[generated_ids[-1]]], device=self.draft_model.device)
-            candidates, cand_probs, draft_pkv = self.draft_model.generate_candidates(
-                input_ids=last_token,
-                gamma=gamma,
+            generated_tokens.append(next_token_id)
+            if next_token_id == self.tokenizer.eos_token_id:
+                break
+
+            curr_logits, pkv = self.target_verifier.step(next_token_id, pkv)
+
+        full_ids = torch.tensor([curr_input_ids[0].tolist() + generated_tokens])
+        text = self.tokenizer.decode(full_ids[0], skip_special_tokens=True)
+        return text, generated_tokens
+
+    def generate_with_stats(
+        self,
+        prompt: str,
+        max_new_tokens: int = 30,
+        gamma: int = 4,
+        temperature: float = 1.0
+    ) -> Tuple[str, List[int], float, int, int]:
+        input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids
+        curr_input_ids = input_ids.to(self.target_verifier.device)
+
+        target_logits, target_pkv = self.target_verifier.prefill(curr_input_ids)
+        draft_logits, draft_pkv = self.draft_model.prefill(curr_input_ids.to(self.draft_model.device))
+
+        generated_tokens: List[int] = []
+        curr_target_logits = target_logits
+        curr_draft_logits = draft_logits
+
+        total_drafted = 0
+        total_accepted = 0
+
+        while len(generated_tokens) < max_new_tokens:
+            cand_tokens, cand_probs, draft_pkv = self.draft_model.generate_candidates(
+                start_logits=curr_draft_logits,
                 past_key_values=draft_pkv,
+                gamma=gamma,
                 temperature=temperature
             )
 
-            accepted_tokens, target_pkv, draft_pkv, target_prob = self.target_verifier.verify(
-                candidate_tokens=candidates,
+            accepted, next_token_id, target_pkv, draft_pkv, acc_count = self.target_verifier.verify(
+                candidate_tokens=cand_tokens,
                 candidate_probs=cand_probs,
-                last_target_prob=target_prob,
+                target_start_logits=curr_target_logits,
                 target_past_key_values=target_pkv,
                 draft_past_key_values=draft_pkv,
                 temperature=temperature
             )
 
-            for token_id in accepted_tokens:
-                generated_ids.append(token_id)
-                num_emitted += 1
-                if token_id == self.tokenizer.eos_token_id or num_emitted >= max_new_tokens:
+            total_drafted += gamma
+            total_accepted += acc_count
+
+            stopped = False
+            for token_id in accepted:
+                generated_tokens.append(token_id)
+                if token_id == self.tokenizer.eos_token_id or len(generated_tokens) >= max_new_tokens:
+                    stopped = True
                     break
 
-            if generated_ids[-1] == self.tokenizer.eos_token_id:
+            if stopped or len(generated_tokens) >= max_new_tokens:
                 break
 
-        full_output_ids = torch.tensor([generated_ids])
-        return self.tokenizer.decode(full_output_ids[0], skip_special_tokens=True)
+            curr_target_logits, target_pkv = self.target_verifier.step(next_token_id, target_pkv)
+            curr_draft_logits, draft_pkv = self.draft_model.step(next_token_id, draft_pkv)
+
+        acceptance_rate = total_accepted / max(1, total_drafted)
+        full_ids = torch.tensor([curr_input_ids[0].tolist() + generated_tokens])
+        text = self.tokenizer.decode(full_ids[0], skip_special_tokens=True)
+        return text, generated_tokens, acceptance_rate, total_drafted, total_accepted
