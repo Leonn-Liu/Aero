@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aero"
+version = "0.1.0"
+description = "Speculative decoding inference engine"
+readme = ""
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0.0",
+    "transformers>=4.40.0",
+    "accelerate>=0.28.0",
+    "ninja>=1.11.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
