@@ -1,4 +1,4 @@
-﻿__pycache__/
+__pycache__/
 *.py[cod]
 *$py.class
 
@@ -28,3 +28,12 @@ checkpoints/
 build/
 dist/
 *.egg-info/
+
+# Traces & Benchmark outputs
+traces/
+result/
+results/
+benchmarks/results/
+benchmarks/smoke_results/
+*.log
+*.zip

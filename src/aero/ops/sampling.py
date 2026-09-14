@@ -14,9 +14,11 @@ class AeroSampler:
         if self.requested_backend in ("auto", "cuda") and torch.cuda.is_available():
             try:
                 import ninja
-                os.environ["PATH"] = f"{ninja.BIN_DIR}:/usr/local/cuda/bin:{os.environ.get('PATH', '')}"
-                os.environ["CUDA_HOME"] = "/usr/local/cuda"
-                os.environ["TORCH_CUDA_ARCH_LIST"] = "8.6"
+                cuda_home = os.environ.get("CUDA_HOME", "/usr/local/cuda")
+                os.environ["CUDA_HOME"] = cuda_home
+                os.environ["PATH"] = f"{ninja.BIN_DIR}:{cuda_home}/bin:{os.environ.get('PATH', '')}"
+                major, minor = torch.cuda.get_device_capability()
+                os.environ["TORCH_CUDA_ARCH_LIST"] = f"{major}.{minor}"
                 from torch.utils.cpp_extension import load
                 csrc_dir = Path(__file__).resolve().parent.parent.parent.parent / "csrc"
                 cpp_file = str(csrc_dir / "bindings.cpp")
